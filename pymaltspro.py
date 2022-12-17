@@ -470,41 +470,41 @@ class pymaltspro:
 		'''
 		description
 		-----------
-		create a dataframe that describes the matched group that each unit belongs to
+        create a dataframe that describes the matched group that each unit belongs to
 
-		inputs
-		------
-		X_estimation : pandas dataframe of input features being used to estimate treatment effects
-		Y_estimation : N_est by S_max_est numpy array s.t. i-th row has S_max_est entries
-			Each entry of i-th row has all samples from unit i's outcome followed by NAs
-		k : int describing number of nearest neighbors to match to
+        inputs
+        ------
+        X_estimation : pandas dataframe of input features being used to estimate treatment effects
+        Y_estimation : N_est by S_max_est numpy array s.t. i-th row has S_max_est entries
+        	Each entry of i-th row has all samples from unit i's outcome followed by NAs
+        k : int describing number of nearest neighbors to match to
 
-		returns
-		-------
-		returns tuple s.t. 
-		first item is a pd dataframe of input features with index of matched units
-		second item is the outcome ordered so that the i-th row of X df and Y align
-		'''
-
+        returns
+        -------
+        returns tuple s.t. 
+        first item is a pd dataframe of input features with index of matched units
+        second item is the outcome ordered so that the i-th row of X df and Y align
+        '''
+        
 		Xc = X_estimation[self.continuous].to_numpy()
 		Xd = X_estimation[self.discrete].to_numpy()
-		Y  = Y_estimation.to_numpy()
+		Y  = Y_estimation
 		T  = X_estimation[self.treatment].to_numpy()
 		# splitted estimation data into treatment assignments for matching
 		df_T = X_estimation.loc[X_estimation[self.treatment] == 1]
 		df_C = X_estimation.loc[X_estimation[self.treatment] == 0]
-		Y_T  = Y_estimation[df_T.index.values]
-		Y_C  = Y_estimation[df_C.index.values]
+		Y_T  = Y_estimation[df_T.index.values, :]
+		Y_C  = Y_estimation[df_C.index.values, :]
 		D_T = np.zeros((Y.shape[0],Y_T.shape[0]))
 		D_C = np.zeros((Y.shape[0],Y_C.shape[0]))
-
+		
 		# distance of treated units
 		Dc_T = (np.ones((Xc_T.shape[0],Xc.shape[1],Xc.shape[0])) * Xc.T - (np.ones((Xc.shape[0],Xc.shape[1],Xc_T.shape[0])) * Xc_T.T).T)
 		Dc_T = np.sum( (Dc_T * (self.Mc.reshape(-1,1)) )**2 , axis=1 )
 		Dd_T = (np.ones((Xd_T.shape[0],Xd.shape[1],Xd.shape[0])) * Xd.T != (np.ones((Xd.shape[0],Xd.shape[1],Xd_T.shape[0])) * Xd_T.T).T )
 		Dd_T = np.sum( (Dd_T * (self.Md.reshape(-1,1)) )**2 , axis=1 )
 		D_T = (Dc_T + Dd_T).T
-
+		
 		# distance of control units
 		Dc_C = (
 			np.ones(
@@ -539,7 +539,7 @@ class pymaltspro:
 				) * Xd_C.T).T )
 		Dd_C = np.sum( (Dd_C * (self.Md.reshape(-1,1)) )**2 , axis=1 )
 		D_C = (Dc_C + Dd_C).T
-
+		
 		MG = {}
 		index = X_estimation.index
 		for i in range(Y.shape[0]):
@@ -557,7 +557,7 @@ class pymaltspro:
 		    	index = df_C.index[idx[:k]],
 		    	columns=self.continuous+self.discrete+[self.outcome,'distance',self.treatment] 
 		    	)
-
+		
 		    #finding k closest treated units to unit i
 		    idx = np.argpartition(D_T[i,:],k)
 		    matched_df_T = pd.DataFrame( 
@@ -586,13 +586,74 @@ class pymaltspro:
 		    	)
 		    matched_df = matched_df.append(matched_df_T.append(matched_df_C))
 		    MG[index[i]] = matched_df
-		    
+		
 		MG_X_df = pd.concat(MG)
 		# how to align input features to outcome variables? maybe need to store MG_Y in a dict?
 		MG_Y_array = Y_estimation[MG_X_df.index]
+		return (MG_X_df, MG_Y_array)
 
-# 
+    # def mg_barycenters(self, MG_X_df, MG_Y_array, model = 'linear'):
+    #     '''
+    #     description
+    #     -----------
+    #     for each matched group, find treated and control barycenters
 
+    #     '''
+
+	def CATE(self,MG, model='mean'):
+		'''
+		description
+		-----------
+		create a dataframe that describes the matched group that each unit belongs to
+		
+		inputs
+		------
+		X_estimation : pandas dataframe of input features being used to estimate treatment effects
+		Y_estimation : N_est by S_max_est numpy array s.t. i-th row has S_max_est entries
+		    Each entry of i-th row has all samples from unit i's outcome followed by NAs
+		k : int describing number of nearest neighbors to match to
+		
+		returns
+		-------
+		returns tuple s.t. 
+		first item is a pd dataframe of input features with index of matched units
+		second item is the outcome ordered so that the i-th row of X df and Y align
+		'''
+		cate = {}
+		for k in pd.unique(MG.index.get_level_values(0)):
+		    v = MG.loc[k]
+		    #control
+		    matched_X_C = v.loc[v[self.treatment]==0].drop(index='query',errors='ignore')[self.continuous+self.discrete]
+		    matched_Y_C = v.loc[v[self.treatment]==0].drop(index='query',errors='ignore')[self.outcome]
+		    #treated
+		    matched_X_T = v.loc[v[self.treatment]==1].drop(index='query',errors='ignore')[self.continuous+self.discrete]
+		    matched_Y_T = v.loc[v[self.treatment]==1].drop(index='query',errors='ignore')[self.outcome]
+		    x = v.loc['query'][self.continuous+self.discrete].to_numpy().reshape(1,-1)
+		    
+		    vc = v[self.continuous].to_numpy()
+		    vd = v[self.discrete].to_numpy()
+		    dvc = np.ones((vc.shape[0],vc.shape[1],vc.shape[0])) * vc.T
+		    dist_cont = np.sum( ( (dvc - dvc.T) * (self.Mc.reshape(-1,1)) )**2, axis=1) 
+		    dvd = np.ones((vd.shape[0],vd.shape[1],vd.shape[0])) * vd.T
+		    dist_dis = np.sum( ( (dvd - dvd.T) * (self.Md.reshape(-1,1)) )**2, axis=1) 
+		    dist_mat = dist_cont + dist_dis
+		    diameter = np.max(dist_mat)
+		    
+		    if not outcome_discrete:
+		        if model=='mean':
+		            yt = np.mean(matched_Y_T)
+		            yc = np.mean(matched_Y_C)
+		            cate[k] = {'CATE': yt - yc,'outcome':v.loc['query'][self.outcome],'treatment':v.loc['query'][self.treatment],'diameter':diameter }
+		        if model=='linear':
+		            yc = lm.Ridge().fit( X = matched_X_C, y = matched_Y_C )
+		            yt = lm.Ridge().fit( X = matched_X_T, y = matched_Y_T )
+		            cate[k] = {'CATE': yt.predict(x)[0] - yc.predict(x)[0], 'outcome':v.loc['query'][self.outcome],'treatment':v.loc['query'][self.treatment],'diameter':diameter }
+		        if model=='RF':
+		            yc = ensemble.RandomForestRegressor().fit( X = matched_X_C, y = matched_Y_C )
+		            yt = ensemble.RandomForestRegressor().fit( X = matched_X_T, y = matched_Y_T )
+		            cate[k] = {'CATE': yt.predict(x)[0] - yc.predict(x)[0], 'outcome':v.loc['query'][self.outcome],'treatment':v.loc['query'][self.treatment],'diameter':diameter }
+		return pd.DataFrame.from_dict(cate,orient='index')
+    
 
 
 
