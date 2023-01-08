@@ -461,200 +461,251 @@ class pymaltspro:
 		self.M_opt = pd.DataFrame(self.M.reshape(1,-1),columns=self.continuous+self.discrete,index=['Diag'])
 		return res
 
-	# method for learning distance metric on train set
-	# method for applying distance metric to test set
-	# method for returning matched group observations for unit i
-	# method for returning CATE given a matched group
-
 	def get_matched_groups(self, X_estimation, Y_estimation, k = 10):
+
+	    Xc = X_estimation[self.continuous].to_numpy()
+	    Xd = X_estimation[self.discrete].to_numpy()
+	    Y  = Y_estimation
+	    T  = X_estimation[self.treatment].to_numpy()
+	    # splitted estimation data into treatment assignments for matching
+	    df_T = X_estimation.loc[X_estimation[self.treatment] == 1]
+	    df_C = X_estimation.loc[X_estimation[self.treatment] == 0]
+	    Y_T  = Y_estimation[df_T.index.values, :]
+	    Y_C  = Y_estimation[df_C.index.values, :]
+	    D_T = np.zeros((Y.shape[0],Y_T.shape[0]))
+	    D_C = np.zeros((Y.shape[0],Y_C.shape[0]))
+	    # converting to numpy array
+	    Xc_T = df_T[self.continuous].to_numpy()
+	    Xc_C = df_C[self.continuous].to_numpy()
+	    Xd_T = df_T[self.discrete].to_numpy()
+	    Xd_C = df_C[self.discrete].to_numpy()
+
+	    # distance of treated units
+	    Dc_T = (np.ones((Xc_T.shape[0],Xc.shape[1],Xc.shape[0])) * Xc.T - (np.ones((Xc.shape[0],Xc.shape[1],Xc_T.shape[0])) * Xc_T.T).T)
+	    Dc_T = np.sum( (Dc_T * (self.Mc.reshape(-1,1)) )**2 , axis=1 )
+	    Dd_T = (np.ones((Xd_T.shape[0],Xd.shape[1],Xd.shape[0])) * Xd.T != (np.ones((Xd.shape[0],Xd.shape[1],Xd_T.shape[0])) * Xd_T.T).T )
+	    Dd_T = np.sum( (Dd_T * (self.Md.reshape(-1,1)) )**2 , axis=1 )
+	    D_T = (Dc_T + Dd_T).T
+
+	    # distance of control units
+	    Dc_C = (
+	        np.ones(
+	            (
+	                Xc_C.shape[0],
+	                Xc.shape[1],
+	                Xc.shape[0]
+	            )	
+	        ) * Xc.T - 
+	            (
+	        np.ones(
+	            (
+	                Xc.shape[0],
+	                Xc.shape[1],
+	                Xc_C.shape[0])
+	            ) * Xc_C.T).T
+	        )
+	    Dc_C = np.sum( (Dc_C * (self.Mc.reshape(-1,1)) )**2 , axis=1 )
+	    Dd_C = (
+	        np.ones(
+	            (
+	                Xd_C.shape[0],
+	                Xd.shape[1],
+	                Xd.shape[0])
+	            ) * Xd.T != (
+	        np.ones(
+	            (
+	                Xd.shape[0],
+	                Xd.shape[1],
+	                Xd_C.shape[0]
+	                )
+	            ) * Xd_C.T).T )
+	    Dd_C = np.sum( (Dd_C * (self.Md.reshape(-1,1)) )**2 , axis=1 )
+	    D_C = (Dc_C + Dd_C).T
+
+	    MG = {}
+	    index = X_estimation.index
+	    for i in range(Y.shape[0]):
+	        #finding k closest control units to unit i
+	        idx = np.argpartition(D_C[i,:],k)
+	        matched_df_C = pd.DataFrame( 
+	            np.hstack( 
+	                (
+	                    Xc_C[idx[:k],:], 
+	                    Xd_C[idx[:k],:].reshape((k,len(self.discrete))), 
+	                    # Y_C[idx[:k]].reshape(-1,1), 
+	                    D_C[i,idx[:k]].reshape(-1,1), 
+	                    np.zeros((k,1)) ) 
+	                ), 
+	            index = df_C.index[idx[:k]],
+	            columns=self.continuous+self.discrete+['distance',self.treatment] 
+	            )
+
+	        #finding k closest treated units to unit i
+	        idx = np.argpartition(D_T[i,:],k)
+	        matched_df_T = pd.DataFrame( 
+	            np.hstack( 
+	                (
+	                    Xc_T[idx[:k],:], 
+	                    Xd_T[idx[:k],:].reshape((k,len(self.discrete))), 
+	                    # Y_T[idx[:k]].reshape(-1,1), 
+	                    D_T[i,idx[:k]].reshape(-1,1), 
+	                    np.ones((k,1)) ) 
+	                ), 
+	            index=df_T.index[idx[:k]], 
+	            columns=self.continuous+self.discrete+['distance',self.treatment] 
+	            )
+	        matched_df = pd.DataFrame(
+	            np.hstack(
+	                (
+	                    Xc[i], 
+	                    Xd[i], 
+	                    # Y[i], 
+	                    0, 
+	                    T[i])
+	                ).reshape(1,-1), 
+	#             index=['query'], 
+	            index = [i],
+	            columns=self.continuous+self.discrete+['distance',self.treatment]
+	            )
+	        matched_df = matched_df.append(matched_df_T.append(matched_df_C))
+	        matched_df['unit_treatment'] = X_estimation.loc[i, self.treatment]
+	        MG[index[i]] = matched_df
+	#     return MG
+	    MG_X_df = pd.concat(MG).reset_index().rename(columns = {'level_0' : 'unit' ,  'level_1' : 'matched_unit'})
+	    
+	    return MG_X_df
+
+
+	def barycenter_imputation(self, X_estimation, Y_estimation, MG):
+	    Y_counterfactual = []
+	    for i in X_estimation.index.values:
+	        # make a holder list for adding matched units' outcomes
+	        matched_unit_ids = MG.query(f'unit == {i}').query(self.treatment + ' != unit_treatment').matched_unit.values
+	        matched_unit_outcomes = Y_estimation[matched_unit_ids, :]
+	        y_i_counterfactual = pmp.wasserstein2_barycenter(
+	            sample_array_1_through_n = matched_unit_outcomes, 
+	            weights = np.repeat(1/matched_unit_outcomes.shape[0], matched_unit_outcomes.shape[0]),
+	            n_samples_min=self.n_samples_min
+	        )
+	        Y_counterfactual.append(y_i_counterfactual)
+	    return np.array(Y_counterfactual)
+
+
+	def sample_quantile(self, quantile_fn, quantile):
+	    '''
+	    description
+	    -----------
+	    linearly interpolate quantile function and return value of a given quantile
+	    
+	    parameters
+	    ----------
+	    quantile_fn : numpy array with values of quantile function at specified quantiles
+	    quantile : value of quantile
+	    n_qtls : size of quantile function
+	    
+	    returns
+	    -------
+	    quantile function evaluated at specified quantile
+	    '''
+	    n_qtls = quantile_fn.shape[0] - 1
+	    quantile_index = quantile * n_qtls
+	    quantile_floor = int(np.floor(quantile_index))
+	    quantile_ceil  = int(np.ceil(quantile_index))
+	#     return quantile_floor, quantile_ceil, quantile_index
+	    if quantile_floor == quantile_ceil == quantile_index:
+	        return(quantile_fn[quantile_floor])
+	    else:
+	        return np.sum([quantile_fn[quantile_floor] * (quantile_index - quantile_floor),
+	            quantile_fn[quantile_ceil] * (quantile_ceil - quantile_index)])
+
+
+	def ITE(self, y_estimation, y_cf, n_mc_samples, observed_treatment):
+	    '''
+	    description
+	    -----------
+	    Compute P(A > B | A ~ Y_i(1), B ~ Y_i(0))
+	    
+	    parameters
+	    ----------
+	    y_estimation : discrete quantiles for observed potential distribution in estimation set
+	    y_cf : discrete quantiles for imputed potential distribution
+	    n_mc_samples : number of monte carlo samples to use in evaluation
+	    observed_treatment : the observed treatment assignment of unit i
+
+	    returns
+	    -------
+	    a float representing probability of a treated sample being greater than untreated samples from potential distributions
+	    '''
+	    qtls_to_sample = np.random.uniform(0, 1, n_mc_samples)
+	    if observed_treatment == 1:
+	        y_treated = [self.sample_quantile(y_estimation, qtl) for qtl in qtls_to_sample]
+	        y_control = [self.sample_quantile(y_cf, qtl) for qtl in qtls_to_sample]
+	    else:
+	        y_treated = [self.sample_quantile(y_cf, qtl) for qtl in qtls_to_sample]
+	        y_control = [self.sample_quantile(y_estimation, qtl) for qtl in qtls_to_sample]
+	    return (y_treated > y_control).mean()
+
+	def linbo_ITE(self, y_obs, y_cf, observed_treatment, reference_distribution, y_obs_qtl_id = False):
+	    '''
+	    description
+	    -----------
+	    Compute Y_i^-1(1) \circ \lambda(t) - Y_i^{-1}(0) \circ \lambda(t)
+	    
+	    parameters
+	    ----------
+	    y_obs : array of samples/quantiles for the true observed outcome in estimation set
+	    y_cf : array of quantile function for counterfactual outcome
+	    observed_treatment : boolean that is True iff treated outcome observed, False otherwise
+	    reference_distribution : a 2D array mapping samples from reference distribution to density of sample
+	        -- reference distribution _must_ be continuous
+	        -- col 1 is sample
+	        -- col 2 is prob of observing sample
+	    y_obs_qtl_id : boolean that is True iff y_estimation is a quantile function
+
+	    returns
+	    -------
+	    E[Y_i(1)^{-1}(\lambda(t)) - Y_i(0)^{-1}(\lambda(t))], 0 <= t <= 1
+	    '''
+	    quantiles = np.linspace(start = 0, stop = 1, num = y_cf.shape[0])
+	    if y_obs_qtl_id:
+	        y_estimation = y_obs
+	    else:
+	        y_estimation = np.quantile(y_obs, quantiles)
+	    
+	    ylambda_treated = []
+	    ylambda_control = []
+	    if observed_treatment == 1:
+	        for i in reference_distribution[1, :]:
+	            ylambda_treated.append(self.sample_quantile(quantile_fn = y_estimation, quantile = i))
+	            ylambda_control.append(self.sample_quantile(quantile_fn = y_cf, quantile = i))
+	    else:
+	        for i in reference_distribution[1, :]:
+	            ylambda_treated.append(self.sample_quantile(quantile_fn = y_cf, quantile = i))
+	            ylambda_control.append(self.sample_quantile(quantile_fn = y_estimation, quantile = i))
+
+	    ylambda_treated = np.array(ylambda_treated)
+	    ylambda_control = np.array(ylambda_control)
+	    ylambda_treated_minus_control = ylambda_treated - ylambda_control
+	    return_array = np.array([reference_distribution[0, :], ylambda_treated_minus_control])
+	    return return_array
+
+	def mise(self, y_pred, y_true):
 		'''
 		description
 		-----------
-        create a dataframe that describes the matched group that each unit belongs to
+		Given function families u_i, v_i approximate 1/n sum_{i = 1}^n (int_{t} |u_i(t) - v_i(t)|^2 dt)
 
-        inputs
-        ------
-        X_estimation : pandas dataframe of input features being used to estimate treatment effects
-        Y_estimation : N_est by S_max_est numpy array s.t. i-th row has S_max_est entries
-        	Each entry of i-th row has all samples from unit i's outcome followed by NAs
-        k : int describing number of nearest neighbors to match to
+		parameters
+		----------
+		y_pred : array from predicted vector
+		y_true : array from true vector
 
-        returns
-        -------
-        returns tuple s.t. 
-        first item is a pd dataframe of input features with index of matched units
-        second item is the outcome ordered so that the i-th row of X df and Y align
-        '''
-        
-		Xc = X_estimation[self.continuous].to_numpy()
-		Xd = X_estimation[self.discrete].to_numpy()
-		Y  = Y_estimation
-		T  = X_estimation[self.treatment].to_numpy()
-		# splitted estimation data into treatment assignments for matching
-		df_T = X_estimation.loc[X_estimation[self.treatment] == 1]
-		df_C = X_estimation.loc[X_estimation[self.treatment] == 0]
-		Y_T  = Y_estimation[df_T.index.values, :]
-		Y_C  = Y_estimation[df_C.index.values, :]
-		D_T = np.zeros((Y.shape[0],Y_T.shape[0]))
-		D_C = np.zeros((Y.shape[0],Y_C.shape[0]))
-		
-		# distance of treated units
-		Dc_T = (np.ones((Xc_T.shape[0],Xc.shape[1],Xc.shape[0])) * Xc.T - (np.ones((Xc.shape[0],Xc.shape[1],Xc_T.shape[0])) * Xc_T.T).T)
-		Dc_T = np.sum( (Dc_T * (self.Mc.reshape(-1,1)) )**2 , axis=1 )
-		Dd_T = (np.ones((Xd_T.shape[0],Xd.shape[1],Xd.shape[0])) * Xd.T != (np.ones((Xd.shape[0],Xd.shape[1],Xd_T.shape[0])) * Xd_T.T).T )
-		Dd_T = np.sum( (Dd_T * (self.Md.reshape(-1,1)) )**2 , axis=1 )
-		D_T = (Dc_T + Dd_T).T
-		
-		# distance of control units
-		Dc_C = (
-			np.ones(
-				(
-		        	Xc_C.shape[0],
-		        	Xc.shape[1],
-		        	Xc.shape[0]
-		    	)	
-			) * Xc.T - 
-				(
-			np.ones(
-				(
-					Xc.shape[0],
-					Xc.shape[1],
-					Xc_C.shape[0])
-				) * Xc_C.T).T
-			)
-		Dc_C = np.sum( (Dc_C * (self.Mc.reshape(-1,1)) )**2 , axis=1 )
-		Dd_C = (
-			np.ones(
-				(
-					Xd_C.shape[0],
-					Xd.shape[1],
-					Xd.shape[0])
-				) * Xd.T != (
-			np.ones(
-				(
-					Xd.shape[0],
-					Xd.shape[1],
-					Xd_C.shape[0]
-					)
-				) * Xd_C.T).T )
-		Dd_C = np.sum( (Dd_C * (self.Md.reshape(-1,1)) )**2 , axis=1 )
-		D_C = (Dc_C + Dd_C).T
-		
-		MG = {}
-		index = X_estimation.index
-		for i in range(Y.shape[0]):
-		    #finding k closest control units to unit i
-		    idx = np.argpartition(D_C[i,:],k)
-		    matched_df_C = pd.DataFrame( 
-		    	np.hstack( 
-		    		(
-		    			Xc_C[idx[:k],:], 
-		    			Xd_C[idx[:k],:].reshape((k,len(self.discrete))), 
-		    			# Y_C[idx[:k]].reshape(-1,1), 
-		    			D_C[i,idx[:k]].reshape(-1,1), 
-		    			np.zeros((k,1)) ) 
-		    		), 
-		    	index = df_C.index[idx[:k]],
-		    	columns=self.continuous+self.discrete+[self.outcome,'distance',self.treatment] 
-		    	)
-		
-		    #finding k closest treated units to unit i
-		    idx = np.argpartition(D_T[i,:],k)
-		    matched_df_T = pd.DataFrame( 
-		    	np.hstack( 
-		    		(
-		    			Xc_T[idx[:k],:], 
-		    			Xd_T[idx[:k],:].reshape((k,len(self.discrete))), 
-		    			# Y_T[idx[:k]].reshape(-1,1), 
-		    			D_T[i,idx[:k]].reshape(-1,1), 
-		    			np.ones((k,1)) ) 
-		    		), 
-		    	index=df_T.index[idx[:k]], 
-		    	columns=self.continuous+self.discrete+[self.outcome,'distance',self.treatment] 
-		    	)
-		    matched_df = pd.DataFrame(
-		    	np.hstack(
-		    		(
-		    			Xc[i], 
-		    			Xd[i], 
-		    			# Y[i], 
-		    			0, 
-		    			T[i])
-		    		).reshape(1,-1), 
-		    	index=['query'], 
-		    	columns=self.continuous+self.discrete+[self.outcome,'distance',self.treatment]
-		    	)
-		    matched_df = matched_df.append(matched_df_T.append(matched_df_C))
-		    MG[index[i]] = matched_df
-		
-		MG_X_df = pd.concat(MG)
-		# how to align input features to outcome variables? maybe need to store MG_Y in a dict?
-		MG_Y_array = Y_estimation[MG_X_df.index]
-		return (MG_X_df, MG_Y_array)
-
-    # def mg_barycenters(self, MG_X_df, MG_Y_array, model = 'linear'):
-    #     '''
-    #     description
-    #     -----------
-    #     for each matched group, find treated and control barycenters
-
-    #     '''
-
-	def CATE(self,MG, model='mean'):
-		'''
-		description
-		-----------
-		create a dataframe that describes the matched group that each unit belongs to
-		
-		inputs
-		------
-		X_estimation : pandas dataframe of input features being used to estimate treatment effects
-		Y_estimation : N_est by S_max_est numpy array s.t. i-th row has S_max_est entries
-		    Each entry of i-th row has all samples from unit i's outcome followed by NAs
-		k : int describing number of nearest neighbors to match to
-		
 		returns
 		-------
-		returns tuple s.t. 
-		first item is a pd dataframe of input features with index of matched units
-		second item is the outcome ordered so that the i-th row of X df and Y align
+		float representing mean integrated squared error between two vectors
 		'''
-		cate = {}
-		for k in pd.unique(MG.index.get_level_values(0)):
-		    v = MG.loc[k]
-		    #control
-		    matched_X_C = v.loc[v[self.treatment]==0].drop(index='query',errors='ignore')[self.continuous+self.discrete]
-		    matched_Y_C = v.loc[v[self.treatment]==0].drop(index='query',errors='ignore')[self.outcome]
-		    #treated
-		    matched_X_T = v.loc[v[self.treatment]==1].drop(index='query',errors='ignore')[self.continuous+self.discrete]
-		    matched_Y_T = v.loc[v[self.treatment]==1].drop(index='query',errors='ignore')[self.outcome]
-		    x = v.loc['query'][self.continuous+self.discrete].to_numpy().reshape(1,-1)
-		    
-		    vc = v[self.continuous].to_numpy()
-		    vd = v[self.discrete].to_numpy()
-		    dvc = np.ones((vc.shape[0],vc.shape[1],vc.shape[0])) * vc.T
-		    dist_cont = np.sum( ( (dvc - dvc.T) * (self.Mc.reshape(-1,1)) )**2, axis=1) 
-		    dvd = np.ones((vd.shape[0],vd.shape[1],vd.shape[0])) * vd.T
-		    dist_dis = np.sum( ( (dvd - dvd.T) * (self.Md.reshape(-1,1)) )**2, axis=1) 
-		    dist_mat = dist_cont + dist_dis
-		    diameter = np.max(dist_mat)
-		    
-		    if not outcome_discrete:
-		        if model=='mean':
-		            yt = np.mean(matched_Y_T)
-		            yc = np.mean(matched_Y_C)
-		            cate[k] = {'CATE': yt - yc,'outcome':v.loc['query'][self.outcome],'treatment':v.loc['query'][self.treatment],'diameter':diameter }
-		        if model=='linear':
-		            yc = lm.Ridge().fit( X = matched_X_C, y = matched_Y_C )
-		            yt = lm.Ridge().fit( X = matched_X_T, y = matched_Y_T )
-		            cate[k] = {'CATE': yt.predict(x)[0] - yc.predict(x)[0], 'outcome':v.loc['query'][self.outcome],'treatment':v.loc['query'][self.treatment],'diameter':diameter }
-		        if model=='RF':
-		            yc = ensemble.RandomForestRegressor().fit( X = matched_X_C, y = matched_Y_C )
-		            yt = ensemble.RandomForestRegressor().fit( X = matched_X_T, y = matched_Y_T )
-		            cate[k] = {'CATE': yt.predict(x)[0] - yc.predict(x)[0], 'outcome':v.loc['query'][self.outcome],'treatment':v.loc['query'][self.treatment],'diameter':diameter }
-		return pd.DataFrame.from_dict(cate,orient='index')
-    
-
+		return ((y_pred - y_true)**2).sum(axis = 1).mean()
+	    
 
 
 
