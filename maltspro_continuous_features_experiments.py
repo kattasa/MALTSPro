@@ -10,6 +10,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 import pickle as pkl
+from multiprocessing import Pool
 
 
 # In[2]:
@@ -90,11 +91,10 @@ def ITE(pmp_self, y_true, y_impute, n_mc_samples, obs_treatment, y_true_qtl_id =
 #         - $E_{Y_i(1)}[Y_i(1)] = 1/2 + error_y - 1$
 #         - $E_i[E_{Y_i(1)}[Y_i(1)] | X] = E_i[1/2 + error_{y,i} - 1] = 1/2 + 1 - 1 = 1/2$
 
-# In[4]:
+# In[3]:
 
 
-# create dataset
-for dataset_iteration in range(1, 100):
+def maltspro_parallel(dataset_iteration):
     print(dataset_iteration, end = ' ')
     seed = 2020 + 1000 * dataset_iteration
     np.random.seed(seed)
@@ -221,4 +221,13 @@ for dataset_iteration in range(1, 100):
     del(ATE_malts)
     del(ATE_true)
     del(ITE_df)
+    
 
+
+# In[4]:
+
+
+if __name__ == '__main__':
+    dataset_iterations_to_conduct = range(48, 100)
+    with Pool(processes = 4) as pool:
+        pool.map(maltspro_parallel, dataset_iterations_to_conduct)
