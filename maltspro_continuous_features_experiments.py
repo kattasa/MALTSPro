@@ -229,5 +229,5 @@ def maltspro_parallel(dataset_iteration):
 
 if __name__ == '__main__':
     dataset_iterations_to_conduct = range(48, 100)
-    with Pool(processes = 4) as pool:
+    with Pool(processes = 40) as pool:
         pool.map(maltspro_parallel, dataset_iterations_to_conduct)

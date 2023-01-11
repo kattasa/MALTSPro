@@ -19,7 +19,6 @@ from sklearn.model_selection import RepeatedStratifiedKFold
 import warnings
 # from scipy.statistics import wasserstein_distance as wd
 warnings.filterwarnings("ignore")
-import ot
 
 
 def wasserstein_dist(sample_array1, sample_array2, p, n_samples_min, array1_quantile = False, array2_quantile = False):
