@@ -1,0 +1,15 @@
+rm(list = ls())
+library(FDboost)
+
+## read data 
+# X
+# Y
+
+## split into training and testing: figure out how to get same seed as in python
+
+## fit model
+
+## predict
+
+## estimate ITE
+

@@ -12,7 +12,6 @@ import sklearn.linear_model as lm
 import sklearn.ensemble as ensemble
 import sklearn.gaussian_process as gp
 from sklearn.gaussian_process.kernels import RBF, WhiteKernel
-import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from sklearn.model_selection import RepeatedStratifiedKFold
@@ -50,30 +49,15 @@ def wasserstein_dist(sample_array1, sample_array2, p, n_samples_min, array1_quan
         # find width of each quantile window
         quantile_diffs = quantile_values[1:] - quantile_values[:-1]
         quantile_diffs = np.hstack([[0], quantile_diffs])
-
-    # convert into quantiles
-    # quantile_array1 = np.apply_along_axis(
-    #     arr = sample_array1,
-    #     axis = 0,
-    #     func1d = lambda x: np.quantile(x[~np.isnan(x)], 
-    #     q = quantile_values)
-    # )
-
-    # quantile_array2 = np.apply_along_axis(
-    #     arr = sample_array2,
-    #     axis = 0,
-    #     func1d = lambda x: np.quantile(x[~np.isnan(x)], 
-    #     q = quantile_values)
-    # )
     if array1_quantile:
     	quantile_array1 = sample_array1
     else:
-    	quantile_array1 = np.quantile(sample_array1[~np.isnan(sample_array1)], q = quantile_values)
+        quantile_array1 = np.quantile(sample_array1[~np.isnan(sample_array1)], q = quantile_values)
     if array2_quantile:
-    	quantile_array2 = sample_array2
+        quantile_array2 = sample_array2
     else:
     	quantile_array2 = np.quantile(sample_array2[~np.isnan(sample_array2)], q = quantile_values)
-
+     
     # calculate distance between quantile
     dist = (np.absolute(quantile_array1 - quantile_array2)**p * quantile_diffs).sum()**(1/p)
     return dist
@@ -115,72 +99,98 @@ def pairwise_wasserstein(sample_array1, sample_array2, p, n_samples_min):
 
     return emd_matrix
 
-def wasserstein2_barycenter(sample_array_1_through_n, weights, n_samples_min):
-    '''
-    description
-    -----------
-    compute the wasserstein-2 barycenter
-
-    inputs
-    ------
-    sample_array_1_through_n : N x Smax numpy array with all of the samples from the distributional outcome
-        N is number of units and Smax is the max number of samples from any distribution
-        if some unit has S < Smax samples, then its entry of y should have (Smax - S) NA values
-    weight : N x 1 array specifying the weight to place on each unit's distribution when taking average
-    n_samples_min : minimum number of samples from any of the N distributions
-
-    returns
-    -------
-    n_samples_min x 1 array such that entry i is (i/n_samples_min)-th quantile from barycenter
-    '''
-
-    # compute empirical quantile functions for each distribution 
-    qtls_1_through_n = np.apply_along_axis(
-                arr = sample_array_1_through_n,
-                axis = 1,
-                func1d = lambda x: np.quantile(
-                    a = x, 
-                    q = np.linspace(start = 0, stop = 1, num = n_samples_min)
-                    )
-                )
-
-    # take quantile level euclidean average weighted by weights
-    bcetner_qtl = np.average(a = qtls_1_through_n,
-                             weights = weights, axis = 0)
-#     bcetner_qtl = bcetner_qtl.reshape((bcetner_qtl.shape[0], 1))
-
-    # return barycenter quantile function
-    return bcetner_qtl
-
-def calc_estimand(f_yi1, f_yi0, n_mc_samples):
+def wasserstein2_barycenter(sample_array_1_through_n, weights, n_samples_min, qtl_id):
 	'''
 	description
 	-----------
-	calculates P(Y_i1 > Y_i0 | Y_1 ~ f_yi1, Y_0 ~ f_yi0) via monte carlo sampling
-	if f_yi is an empirical quantile function, we sample from the function
-		-- akin to inverse transform sampling
-	if f_yi is samples from pdf, we sample from the samples 
-		-- akin to bootstrapping
+	compute the wasserstein-2 barycenter
+
 	inputs
 	------
-	f_yi1 : S_i x 1 array of samples/quantiles from true treated potential distribution for unit i
-	f_yi0 : S_i x 1 array of samples/quantiles from true control potential distribution for unit i
-	n_mc_samples : number of monte carlo iterations to compute estimand
+	sample_array_1_through_n : N x Smax numpy array with all of the samples from the distributional outcome
+		N is number of units and Smax is the max number of samples from any distribution
+		if some unit has S < Smax samples, then its entry of y should have (Smax - S) NA values
+					OR
+		N x Q matrix where Q is number of quantiles the quantile function is evaluated at
+	weight : N x 1 array specifying the weight to place on each unit's distribution when taking average
+	n_samples_min : minimum number of samples from any of the N distributions
+	qtl_id : boolean set to True if sample_array_1_through_n is quantile function
 
 	returns
 	-------
-	unit i's individual treatment effect
+	n_samples_min x 1 array such that entry i is (i/n_samples_min)-th quantile from barycenter
 	'''
+	# compute empirical quantile functions for each distribution 
+	if qtl_id == False:
+		qtls_1_through_n = np.apply_along_axis(
+					arr = sample_array_1_through_n,
+					axis = 1,
+					func1d = lambda x: np.quantile(
+						a = x, 
+						q = np.linspace(start = 0, stop = 1, num = n_samples_min)
+						)
+					)
+	else:
+		qtls_1_through_n = sample_array_1_through_n
 
-	yi1_samples = np.random.choice(a = f_yi1, size = n_mc_samples, replace = True)
-	yi0_samples = np.random.choice(a = f_yi0, size = n_mc_samples, replace = True)
+	# take quantile level euclidean average weighted by weights
+	bcenter_qtl = np.average(a = qtls_1_through_n,
+								weights = weights, axis = 0)
 
-	return (yi1_samples > yi0_samples).mean()
+	# return barycenter quantile function
+	return bcenter_qtl
 
+
+
+def sample_quantile(quantile_fn, quantile):
+    '''
+    description
+    -----------
+    linearly interpolate quantile function and return value of a given quantile
+    
+    parameters
+    ----------
+    quantile_fn : numpy array with values of quantile function at specified quantiles
+    quantile : value of quantile
+    n_qtls : size of quantile function
+    
+    returns
+    -------
+    quantile function evaluated at specified quantile
+    '''
+    n_qtls = quantile_fn.shape[0] - 1
+    quantile_index = quantile * n_qtls
+    quantile_floor = int(np.floor(quantile_index))
+    quantile_ceil  = int(np.ceil(quantile_index))
+    if quantile_floor == quantile_ceil == quantile_index:
+        return(quantile_fn[quantile_floor])
+    else:
+        return np.sum([quantile_fn[quantile_floor] * (quantile_index - quantile_floor), quantile_fn[quantile_ceil] * (quantile_ceil - quantile_index)])
+
+def ITE(n_samples_min, y_true, y_impute, n_mc_samples, obs_treatment, y_true_qtl_id = False, y_impute_qtl_id = False):
+    if y_true_qtl_id == False:
+        y_true_qtl_fn = np.quantile(y_true, q = np.arange(n_samples_min)/n_samples_min)
+    else:
+        y_true_qtl_fn = y_true
+    
+    if y_impute_qtl_id == False:
+        y_impute_qtl_fn = np.quantile(y_impute, q = np.arange(n_samples_min)/n_samples_min)
+    else:
+        y_impute_qtl_fn = y_impute
+    
+    qtls_to_sample = np.random.uniform(low = 0, high = 1, size = n_mc_samples)
+    if obs_treatment == 1:
+        y_treat = np.array([sample_quantile(quantile_fn = y_true_qtl_fn, quantile = q) for q in qtls_to_sample])
+        y_control = np.array([sample_quantile(quantile_fn = y_impute_qtl_fn, quantile = q) for q in qtls_to_sample])
+    else:
+        y_treat = np.array([sample_quantile(quantile_fn = y_impute_qtl_fn, quantile = q) for q in qtls_to_sample])
+        y_control = np.array([sample_quantile(quantile_fn = y_true_qtl_fn, quantile = q) for q in qtls_to_sample])
+        
+    return (y_treat > y_control).mean()
 
 # class for pymaltspro 
 class pymaltspro:
-	def __init__(self, X, y, treatment, discrete = [], C = 1, k = 10, reweight = False):
+	def __init__(self, X, y, X_dist, treatment, discrete = [], C = 1, k = 10, reweight = False):
 		'''
 		description
 		-----------
@@ -221,6 +231,11 @@ class pymaltspro:
 		self.Xc_C = self.X_C[self.continuous].to_numpy()
 		self.Xd_T = self.X_T[self.discrete].to_numpy()
 		self.Xd_C = self.X_C[self.discrete].to_numpy()
+
+		# split covariates that are distributions into control/treated units
+		self.Xp_T = [dist[np.where(X[treatment] == 1), :] for dist in X_dist]
+		self.Xp_C = [dist[np.where(X[treatment] == 0), :] for dist in X_dist]
+
 		self.y = y
 		# N x Smax vectors Y
 		# find the minimum number of samples taken from outcome dist across all units
@@ -290,7 +305,7 @@ class pymaltspro:
 		return x
     
     # calculates distance between two units _given_ a specified distance metric -- not being used right now
-	def distance(self,Mc,Md,xc1,xd1,xc2,xd2):
+	def distance(self,Mc,Md, Mp, xc1,xd1,xc2,xd2, xp1, xp2):
 		'''
 		description
 		-----------
@@ -299,7 +314,14 @@ class pymaltspro:
 		'''
 		dc = np.dot((Mc**2)*(xc1-xc2),(xc1-xc2))
 		dd = np.sum((Md**2)*xd1!=xd2)
-		return dc+dd
+		pd = np.array([Mp[i] * wasserstein_dist(sample_array1=xp1[i],
+					 				  sample_array2=xp2[i],
+									  p = 1, 
+									  n_samples_min=xp1[i].shape[0], 
+									  array1_quantile=True, 
+									  array2_quantile=True) for i in range(len(xp1))]).sum()
+
+		return dc+dd+pd
 
 	def calcW_T(self,Mc,Md):
 		'''
@@ -575,20 +597,20 @@ class pymaltspro:
 	    return MG_X_df
 
 
-	def barycenter_imputation(self, X_estimation, Y_estimation, MG):
+	def barycenter_imputation(self, X_estimation, Y_estimation, MG, qtl_id):
 	    Y_counterfactual = []
 	    for i in X_estimation.index.values:
 	        # make a holder list for adding matched units' outcomes
-	        matched_unit_ids = MG.query(f'unit == {i}').query(self.treatment + ' != unit_treatment').matched_unit.values
+	        matched_unit_ids = MG.query('unit == ' + str(i)).query(self.treatment + ' != unit_treatment').matched_unit.values
 	        matched_unit_outcomes = Y_estimation[matched_unit_ids, :]
-	        y_i_counterfactual = pmp.wasserstein2_barycenter(
+	        y_i_counterfactual = wasserstein2_barycenter(
 	            sample_array_1_through_n = matched_unit_outcomes, 
 	            weights = np.repeat(1/matched_unit_outcomes.shape[0], matched_unit_outcomes.shape[0]),
-	            n_samples_min=self.n_samples_min
+	            n_samples_min=self.n_samples_min,
+		    qtl_id=qtl_id
 	        )
 	        Y_counterfactual.append(y_i_counterfactual)
 	    return np.array(Y_counterfactual)
-
 
 	def sample_quantile(self, quantile_fn, quantile):
 	    '''
@@ -687,6 +709,48 @@ class pymaltspro:
 	    ylambda_treated_minus_control = ylambda_treated - ylambda_control
 	    return_array = np.array([reference_distribution[0, :], ylambda_treated_minus_control])
 	    return return_array
+	
+	def CATE(self, X_estimation, Y_estimation, reference_distribution, MG):
+		CATE_array = []
+		for i in X_estimation.index.values:
+			# get treated units and outcomes that query unit is matched with
+			
+			treated_matched_unit_ids = MG.query('unit == ' + str(i)).query(self.treatment + ' == 1').matched_unit.values
+			treated_matched_unit_outcomes = Y_estimation[treated_matched_unit_ids, :]
+			# get quantile function of treated barycenter given X= x_i
+			y_treated = wasserstein2_barycenter(
+				sample_array_1_through_n = treated_matched_unit_outcomes, 
+				weights = np.repeat(1/treated_matched_unit_outcomes.shape[0], treated_matched_unit_outcomes.shape[0]),
+				n_samples_min=self.n_samples_min,
+				qtl_id=False
+			)
+			
+			# get control units and outcomes that query unit is matched with
+			control_matched_unit_ids = MG.query('unit == ' + str(i)).query(self.treatment + ' == 0').matched_unit.values
+			control_matched_unit_outcomes = Y_estimation[control_matched_unit_ids, :]
+			# get quantile function control barycenter given X = x_i
+			y_control = wasserstein2_barycenter(
+				sample_array_1_through_n = control_matched_unit_outcomes, 
+				weights = np.repeat(1/control_matched_unit_outcomes.shape[0], control_matched_unit_outcomes.shape[0]),
+				n_samples_min=self.n_samples_min,
+				qtl_id=False
+			)
+			# get Y^{-1} \circ \lambda for treated and control outcomes
+			y_lambda_treated = []
+			y_lambda_control = []
+			for i in reference_distribution[1, :]:
+				y_lambda_treated.append(self.sample_quantile(quantile_fn = y_treated, quantile = i))
+				y_lambda_control.append(self.sample_quantile(quantile_fn = y_control, quantile = i))
+
+			y_lambda_treated = np.array(y_lambda_treated)
+			y_lambda_control = np.array(y_lambda_control)
+			# estimate CATE and append to list
+			CATE_i = y_lambda_treated - y_lambda_control
+
+			CATE_array.append(CATE_i)
+		CATE_array = np.array(CATE_array).reshape([Y_estimation.shape[0], reference_distribution[1, :].shape[0]])
+		return CATE_array
+
 
 	def mise(self, y_pred, y_true):
 		'''

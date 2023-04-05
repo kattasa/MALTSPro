@@ -318,12 +318,12 @@ class wass_node:
             print("Root")
         elif self.node_type == 'left_node':
             if self.best_feature is not None:
-                print(f"|{spaces} Split rule: {self.best_feature} <= {self.best_feature_split_val}")
+                print(str(spaces) + " Split rule: " + self.best_feature + " <= " + self.best_feature_split_val)
         else:
             if self.best_feature is not None:
-                print(f"|{spaces} Split rule: {self.best_feature} > {self.best_feature_split_val}")
-        print(f"{' ' * const}   | MSWE of the node: {round(self.mswe, 5)}")
-        print(f"{' ' * const}   | Count of observations in node: {self.n_units}")
+                print(str(spaces) + "Split rule: " + str(self.best_feature) + " > " + str(self.best_feature_split_val))
+        print(' ' * const +  "| MSWE of the node: {round(self.mswe, 5)}")
+        print({' ' * const} + "  | Count of observations in node: {self.n_units}")
 #         print(f"{' ' * const}   | Prediction of node: {round(self.ymean, 3)}")   
 
     def print_tree(self):
@@ -343,7 +343,7 @@ class wass_node:
         y_pred = []
         for col in self.X.columns:
             if col not in X_valid.columns:
-              raise Exception(f'{col} is not a valid column')
+              raise Exception(col + ' is not a valid column')
         for i in X_valid.index.values:
             while (node.left_node is not None) and (node.right_node is not None):
                 if X_valid.loc[i, node.best_feature] <= node.best_feature_split_val:
@@ -379,6 +379,15 @@ class wass_forest:
         else:
             self.n_samples_min = n_samples_min
         
+        # convert Y to quantile function
+        if self.y_quantile_id == False:
+            quantiles = np.linspace(0, 1, self.n_samples_min)
+            self.y = np.apply_along_axis(
+                arr = self.y,
+                axis = 1,
+                func1d = lambda x: np.quantile(a = y, q = quantiles))
+        
+        self.y_quantile_id = True
         # save hyperparameters: defaults are 20 and 5 unless specified otherwise
         if min_samples_split is None:
             self.min_samples_split = 20

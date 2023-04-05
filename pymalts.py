@@ -13,7 +13,7 @@ import sklearn.linear_model as lm
 import sklearn.ensemble as ensemble
 import sklearn.gaussian_process as gp
 from sklearn.gaussian_process.kernels import RBF, WhiteKernel
-import seaborn as sns
+# import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from sklearn.model_selection import RepeatedStratifiedKFold
@@ -200,32 +200,32 @@ class malts:
                     cate[k] = {'CATE': yt.predict(x)[0] - yc.predict(x)[0], 'outcome':v.loc['query'][self.outcome],'treatment':v.loc['query'][self.treatment],'diameter':diameter }
         return pd.DataFrame.from_dict(cate,orient='index')
     
-    def visualizeMG(self,MG,a):
-        MGi = MG.loc[a]
-        k = int( (MGi.shape[0] - 1 )/2 )
-        df = MGi[self.continuous+self.discrete].drop(index='query')
+    # def visualizeMG(self,MG,a):
+    #     MGi = MG.loc[a]
+    #     k = int( (MGi.shape[0] - 1 )/2 )
+    #     df = MGi[self.continuous+self.discrete].drop(index='query')
         
-        df.index.names = ['Unit']
-        df.columns.names = ['Covariate']
-        tidy = df.stack().to_frame().reset_index().rename(columns={0: 'Covariate Value'})  
+    #     df.index.names = ['Unit']
+    #     df.columns.names = ['Covariate']
+    #     tidy = df.stack().to_frame().reset_index().rename(columns={0: 'Covariate Value'})  
         
-        T = np.array([0 for i in range(0,k*self.p)] + [1 for i in range(0,k*self.p)])
-        tidy[self.treatment] = T
+    #     T = np.array([0 for i in range(0,k*self.p)] + [1 for i in range(0,k*self.p)])
+    #     tidy[self.treatment] = T
         
-        y0 = np.ones((self.p,k)) * MGi.loc[MGi[self.treatment]==0][self.outcome].drop(index='query',errors='ignore').to_numpy()
-        y0 = y0.flatten('F')
-        y1 = np.ones((self.p,k)) * MGi.loc[MGi[self.treatment]==1][self.outcome].drop(index='query',errors='ignore').to_numpy()
-        y1 = y0.flatten('F')
-        tidy[self.outcome] = np.hstack( (y0,y1) )
-        fig = plt.figure()
-        sns.lmplot(sharey=False,sharex=False,x='Covariate Value',y=self.outcome,hue=self.treatment, col='Covariate', data=tidy, col_wrap=3, height=4)
-        fig.savefig('matched_group_%d.png'%(a))
+    #     y0 = np.ones((self.p,k)) * MGi.loc[MGi[self.treatment]==0][self.outcome].drop(index='query',errors='ignore').to_numpy()
+    #     y0 = y0.flatten('F')
+    #     y1 = np.ones((self.p,k)) * MGi.loc[MGi[self.treatment]==1][self.outcome].drop(index='query',errors='ignore').to_numpy()
+    #     y1 = y0.flatten('F')
+    #     tidy[self.outcome] = np.hstack( (y0,y1) )
+    #     fig = plt.figure()
+    #     sns.lmplot(sharey=False,sharex=False,x='Covariate Value',y=self.outcome,hue=self.treatment, col='Covariate', data=tidy, col_wrap=3, height=4)
+    #     fig.savefig('matched_group_%d.png'%(a))
         
-        fig = plt.figure(figsize=(15,20))
-        pd.plotting.parallel_coordinates(df,self.treatment,colormap=plt.cm.Set1)
-        fig.savefig('parallel_coordinate_matched_group_%d.png'%(a))
+    #     fig = plt.figure(figsize=(15,20))
+    #     pd.plotting.parallel_coordinates(df,self.treatment,colormap=plt.cm.Set1)
+    #     fig.savefig('parallel_coordinate_matched_group_%d.png'%(a))
         
-        return tidy
+    #     return tidy
     
     def visualizeDimension(self,MG,x1,x2):
         X = []
