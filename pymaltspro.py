@@ -99,6 +99,53 @@ def pairwise_wasserstein(sample_array1, sample_array2, p, n_samples_min):
 
     return emd_matrix
 
+def wasserstein_distance_unit_covs(x1, x2, weights, n_samples_min):
+	distance = 0
+	for j in range(x1.shape[1]):
+		distance += weights[j] * wasserstein_dist(sample_array1=x1[j, :],
+												sample_array2=x2[j, :],
+												p = 1, 
+												n_samples_min=n_samples_min, 
+												array1_quantile=True, 
+												array2_quantile=True)
+	return distance
+
+def wasserstein_distance_matrix(qtl_fn_matrix, weights):
+	'''
+	description
+	-----------
+	Calculate distance between all units' distributional covariates
+	d(x_1, x_2) = \sum_{covs j} w_j W_1(x_{1,j}, x_{2,j}) 
+	            = \sum_{covs j} w_j \int_0^1 |x_{1,j}(q) - x_{2,j}(q)| dq
+		    	= \sum_{covs j} w_j \sum_{q = 0...1} |x_{1,j,q} - x_{2,j,q}|\Delta_q
+	
+	inputs
+	------
+	qtl_fn_matrix : N by P by Q matrix where
+		N is number of units
+		P is number of distributional covariates
+		Q is number of discrete quantiles each covariate is evaluated at *with equal size bins*
+		each entry is unit i's covariate j's empirical quantile q
+	weights : P by 1 array where
+		P is number of distributional covariates
+	
+	returns
+	-------
+	N by N matrix representing distributional distance between all units
+	'''
+	dist_matrix = np.zeros((qtl_fn_matrix.shape[0], qtl_fn_matrix.shape[0]))
+	n_samples_min = qtl_fn_matrix.shape[2]
+	for i1 in range(qtl_fn_matrix.shape[0]):
+		for i2 in range(qtl_fn_matrix.shape[0]):
+			dist_matrix[i1, i2] = wasserstein_distance_unit_covs(x1 = qtl_fn_matrix[i1, :, :],
+																	x2 = qtl_fn_matrix[i2, :, :],
+																	weights = weights,
+																	n_samples_min= n_samples_min
+																	)
+	return dist_matrix
+
+
+
 def wasserstein2_barycenter(sample_array_1_through_n, weights, n_samples_min, qtl_id):
 	'''
 	description
@@ -190,7 +237,7 @@ def ITE(n_samples_min, y_true, y_impute, n_mc_samples, obs_treatment, y_true_qtl
 
 # class for pymaltspro 
 class pymaltspro:
-	def __init__(self, X, y, X_dist, treatment, discrete = [], C = 1, k = 10, reweight = False):
+	def __init__(self, X, y, X_quantile_fns, treatment, discrete = [], C = 1, k = 10, reweight = False):
 		'''
 		description
 		-----------
@@ -200,8 +247,8 @@ class pymaltspro:
 		------
 		X : N x (p + 2) pandas dataframe with all of the input features and treatment variable
 			N is number of units and p is number of input covariates
-			 1 extra column for treatment variable
-			 1 extra column for unit id s.t. row 1 is also unit 1
+				1 extra column for treatment variable
+				1 extra column for unit id s.t. row 1 is also unit 1
 			make sure indices are in order 1, 2, ..., N so it aligns with y
 		y : N x Smax numpy array with all of the samples from the distributional outcome
 			N is number of units and Smax is the max number of samples from any distribution
@@ -218,11 +265,12 @@ class pymaltspro:
 		self.k = k	
 		self.reweight = reweight
 		self.n, self.p = X.shape
-		self.p = self.p - 1 # number of non-treatment input features
+		self.p = self.p + X_quantile_fns.shape[1] - 1 # number of non-treatment input features
 		self.treatment = treatment
 		# self.id_name = id_name
 		self.discrete = discrete
 		self.continuous = list(set(X.columns).difference(set([treatment]+discrete)))
+		self.distributional = range(X_quantile_fns.shape[1])
 		# split data into control and treated units
 		self.X_T = X.loc[X[treatment] == 1]
 		self.X_C = X.loc[X[treatment] == 0]
@@ -233,8 +281,8 @@ class pymaltspro:
 		self.Xd_C = self.X_C[self.discrete].to_numpy()
 
 		# split covariates that are distributions into control/treated units
-		self.Xp_T = [dist[np.where(X[treatment] == 1), :] for dist in X_dist]
-		self.Xp_C = [dist[np.where(X[treatment] == 0), :] for dist in X_dist]
+		self.Xq_T = X_quantile_fns[self.X_T.index.values, :, :]
+		self.Xq_C = X_quantile_fns[self.X_C.index.values, :, :]
 
 		self.y = y
 		# N x Smax vectors Y
@@ -252,13 +300,13 @@ class pymaltspro:
 				arr = self.Y_T,
 				axis = 1,
 				func1d = lambda x: np.quantile(a = x[x == x], # remove NaN
-								   q = self.quantile_values)
+									q = self.quantile_values)
 				)
 		self.Y_C_quantiles = np.apply_along_axis(
 				arr = self.Y_C,
 				axis = 1,
 				func1d = lambda x: np.quantile(a = x[x == x],  
-								   q = self.quantile_values)
+									q = self.quantile_values)
 				)
 		# store wasserstein distances in N_T x N_T (or N_C x N_C) matrix to avoid recomputing
 		# self.Wass1_Y_T = pairwise_wasserstein(self.Y_T, self.Y_T, p = 1, n_samples_min = self.n_samples_min)
@@ -281,7 +329,12 @@ class pymaltspro:
 		self.Dd_C = np.ones((self.Xd_C.shape[0],self.Xd_C.shape[1],self.Xd_C.shape[0])) * self.Xd_C.T
 		self.Dd_C = (self.Dd_C != self.Dd_C.T) 
 
-    # choose what kind of nearest neighbor we want; as of rn, it's just caliper (traditional knn)
+		# Dq_T represents distance between quantile functions for treatment units
+		# Dq_C represents distance between quantile functions for control units
+		self.Dq_T = wasserstein_distance_matrix(qtl_fn_matrix=self.Xq_T, weights = np.repeat(1, self.Xq_T.shape[1]))
+		self.Dq_C = wasserstein_distance_matrix(qtl_fn_matrix=self.Xq_C, weights = np.repeat(1, self.Xq_T.shape[1]))
+
+    # choose what kind of nearest neighbor we want; as of rn, it's just traditional knn
 	def threshold(self,x):
 		'''
 		description
@@ -305,7 +358,7 @@ class pymaltspro:
 		return x
     
     # calculates distance between two units _given_ a specified distance metric -- not being used right now
-	def distance(self,Mc,Md, Mp, xc1,xd1,xc2,xd2, xp1, xp2):
+	def distance(self,Mc,Md, Mq, xc1,xd1,xc2,xd2, xq1, xq2):
 		'''
 		description
 		-----------
@@ -314,16 +367,14 @@ class pymaltspro:
 		'''
 		dc = np.dot((Mc**2)*(xc1-xc2),(xc1-xc2))
 		dd = np.sum((Md**2)*xd1!=xd2)
-		pd = np.array([Mp[i] * wasserstein_dist(sample_array1=xp1[i],
-					 				  sample_array2=xp2[i],
-									  p = 1, 
-									  n_samples_min=xp1[i].shape[0], 
-									  array1_quantile=True, 
-									  array2_quantile=True) for i in range(len(xp1))]).sum()
+		dq = wasserstein_distance_unit_covs(x1 = xq1, 
+				      						x2 = xq2,
+											weights = Mq, 
+											n_samples_min=xq1.shape[1])
 
-		return dc+dd+pd
+		return dc+dd+dq
 
-	def calcW_T(self,Mc,Md):
+	def calcW_T(self,Mc,Md,Mq):
 		'''
 		description
 		-----------
@@ -333,7 +384,8 @@ class pymaltspro:
 		inputs
 		------
 		Mc : matrix of how to stretch each unit's continuous covariates
-		Mc : matrix of how to stretch each unit's discrete covariates
+		Md : matrix of how to stretch each unit's discrete covariates
+		Mq : matrix of how to stretch each unit's distributional covariates
 
 		returns
 		-------
@@ -342,11 +394,12 @@ class pymaltspro:
 	    #this step is slow
 		Dc = np.sum( ( self.Dc_T * (Mc.reshape(-1,1)) )**2, axis=1)
 		Dd = np.sum( ( self.Dd_T * (Md.reshape(-1,1)) )**2, axis=1)
-		W = self.threshold( (Dc + Dd) )
+		Dq = np.sum( ( self.Dq_T * (Mq.reshape(-1,1)) )**2, axis = 1 )
+		W = self.threshold( (Dc + Dd + Dq) )
 		W = W / (np.sum(W,axis=1)-np.diag(W)).reshape(-1,1)
 		return W  
 
-	def calcW_C(self,Mc,Md):
+	def calcW_C(self,Mc,Md,Mq):
 		'''
 		description
 		-----------
@@ -365,6 +418,7 @@ class pymaltspro:
 	    #this step is slow
 		Dc = np.sum( ( self.Dc_C * (Mc.reshape(-1,1)) )**2, axis=1)
 		Dd = np.sum( ( self.Dd_C * (Md.reshape(-1,1)) )**2, axis=1)
+		Dq = np.sum( ( self.Dq_T * (Mq.reshape(-1,1)) )**2, axis = 1 )
 		W = self.threshold( (Dc + Dd) )
 		W = W / (np.sum(W,axis=1)-np.diag(W)).reshape(-1,1)
 		return W
@@ -372,7 +426,7 @@ class pymaltspro:
 
 
 	# combination of both W_C and W_T
-	def Delta_(self,Mc,Md):
+	def Delta_(self,Mc,Md,Mq):
 		'''
 		description
 		-----------
@@ -390,8 +444,8 @@ class pymaltspro:
 
 		returns weighted or unweighted 
 		'''
-		self.W_T = self.calcW_T(Mc,Md)
-		self.W_C = self.calcW_C(Mc,Md)
+		self.W_T = self.calcW_T(Mc,Md,Mq)
+		self.W_C = self.calcW_C(Mc,Md,Mq)
 		self.delta_T = np.ones(shape = self.Y_T.shape[0])
 		self.delta_C = np.ones(shape = self.Y_C.shape[0])
 
@@ -450,12 +504,13 @@ class pymaltspro:
 		calculated objective function
 		'''
 		Mc = M[ :len(self.continuous)]
-		Md = M[len(self.continuous): ]
-		delta = self.Delta_(Mc, Md)
-		reg = self.C * ( np.linalg.norm(Mc,ord=2)**2 + np.linalg.norm(Md,ord=2)**2 )
+		Md = M[len(self.continuous):len(self.distributional)]
+		Mq = M[len(self.distributional): ]
+		delta = self.Delta_(Mc, Md, Mq)
+		reg = self.C * ( np.linalg.norm(Mc,ord=2)**2 + np.linalg.norm(Md,ord=2)**2 + np.linalg.norm(Mq,ord=2))
 		# ask harsh why we need cons1 and cons2
-		cons1 = 0 * ( (np.sum(Mc) + np.sum(Md)) - self.p )**2
-		cons2 = 1e+25 * np.sum( ( np.concatenate((Mc,Md)) < 0 ) )
+		cons1 = 0 * ( (np.sum(Mc) + np.sum(Md) + np.sum(Mq)) - self.p )**2
+		cons2 = 1e+25 * np.sum( ( np.concatenate((Mc,Md,Mq)) < 0 ) )
 		return delta + reg + cons1 + cons2
 
 	# fits -- like sklearn fit
@@ -478,123 +533,129 @@ class pymaltspro:
 		res = opt.minimize( self.objective, x0=M_init,method=method )
 		self.M = res.x
 		self.Mc = self.M[:len(self.continuous)]
-		self.Md = self.M[len(self.continuous):]
-		self.M_opt = pd.DataFrame(self.M.reshape(1,-1),columns=self.continuous+self.discrete,index=['Diag'])
+		self.Md = self.M[len(self.continuous):len(self.distributional)]
+		self.Mq = self.M[len(self.distributional):]
+		self.M_opt = pd.DataFrame(self.M.reshape(1,-1),columns=self.continuous+self.discrete+self.distributional,index=['Diag'])
 		return res
 
-	def get_matched_groups(self, X_estimation, Y_estimation, k = 10):
+	def get_matched_groups(self, X_estimation, X_qtl_estimation, Y_estimation, k = 10):
 
-	    Xc = X_estimation[self.continuous].to_numpy()
-	    Xd = X_estimation[self.discrete].to_numpy()
-	    Y  = Y_estimation
-	    T  = X_estimation[self.treatment].to_numpy()
-	    # splitted estimation data into treatment assignments for matching
-	    df_T = X_estimation.loc[X_estimation[self.treatment] == 1]
-	    df_C = X_estimation.loc[X_estimation[self.treatment] == 0]
-	    Y_T  = Y_estimation[df_T.index.values, :]
-	    Y_C  = Y_estimation[df_C.index.values, :]
-	    D_T = np.zeros((Y.shape[0],Y_T.shape[0]))
-	    D_C = np.zeros((Y.shape[0],Y_C.shape[0]))
-	    # converting to numpy array
-	    Xc_T = df_T[self.continuous].to_numpy()
-	    Xc_C = df_C[self.continuous].to_numpy()
-	    Xd_T = df_T[self.discrete].to_numpy()
-	    Xd_C = df_C[self.discrete].to_numpy()
+		Xc = X_estimation[self.continuous].to_numpy()
+		Xd = X_estimation[self.discrete].to_numpy()
+		Y  = Y_estimation
+		T  = X_estimation[self.treatment].to_numpy()
+		# splitted estimation data into treatment assignments for matching
+		df_T = X_estimation.loc[X_estimation[self.treatment] == 1]
+		df_C = X_estimation.loc[X_estimation[self.treatment] == 0]
+		Y_T  = Y_estimation[df_T.index.values, :]
+		Y_C  = Y_estimation[df_C.index.values, :]
+		D_T = np.zeros((Y.shape[0],Y_T.shape[0]))
+		D_C = np.zeros((Y.shape[0],Y_C.shape[0]))
 
-	    # distance of treated units
-	    Dc_T = (np.ones((Xc_T.shape[0],Xc.shape[1],Xc.shape[0])) * Xc.T - (np.ones((Xc.shape[0],Xc.shape[1],Xc_T.shape[0])) * Xc_T.T).T)
-	    Dc_T = np.sum( (Dc_T * (self.Mc.reshape(-1,1)) )**2 , axis=1 )
-	    Dd_T = (np.ones((Xd_T.shape[0],Xd.shape[1],Xd.shape[0])) * Xd.T != (np.ones((Xd.shape[0],Xd.shape[1],Xd_T.shape[0])) * Xd_T.T).T )
-	    Dd_T = np.sum( (Dd_T * (self.Md.reshape(-1,1)) )**2 , axis=1 )
-	    D_T = (Dc_T + Dd_T).T
+		# converting to numpy array
+		Xc_T = df_T[self.continuous].to_numpy()
+		Xc_C = df_C[self.continuous].to_numpy()
+		Xd_T = df_T[self.discrete].to_numpy()
+		Xd_C = df_C[self.discrete].to_numpy()
+		Xq_T = X_qtl_estimation[df_T.index.values, :]
+		Xq_C = X_qtl_estimation[df_C.index.values, :]
 
-	    # distance of control units
-	    Dc_C = (
-	        np.ones(
-	            (
-	                Xc_C.shape[0],
-	                Xc.shape[1],
-	                Xc.shape[0]
-	            )	
-	        ) * Xc.T - 
-	            (
-	        np.ones(
-	            (
-	                Xc.shape[0],
-	                Xc.shape[1],
-	                Xc_C.shape[0])
-	            ) * Xc_C.T).T
-	        )
-	    Dc_C = np.sum( (Dc_C * (self.Mc.reshape(-1,1)) )**2 , axis=1 )
-	    Dd_C = (
-	        np.ones(
-	            (
-	                Xd_C.shape[0],
-	                Xd.shape[1],
-	                Xd.shape[0])
-	            ) * Xd.T != (
-	        np.ones(
-	            (
-	                Xd.shape[0],
-	                Xd.shape[1],
-	                Xd_C.shape[0]
-	                )
-	            ) * Xd_C.T).T )
-	    Dd_C = np.sum( (Dd_C * (self.Md.reshape(-1,1)) )**2 , axis=1 )
-	    D_C = (Dc_C + Dd_C).T
+		# distance of treated units
+		Dc_T = (np.ones((Xc_T.shape[0],Xc.shape[1],Xc.shape[0])) * Xc.T - (np.ones((Xc.shape[0],Xc.shape[1],Xc_T.shape[0])) * Xc_T.T).T)
+		Dc_T = np.sum( (Dc_T * (self.Mc.reshape(-1,1)) )**2 , axis=1 )
+		Dd_T = (np.ones((Xd_T.shape[0],Xd.shape[1],Xd.shape[0])) * Xd.T != (np.ones((Xd.shape[0],Xd.shape[1],Xd_T.shape[0])) * Xd_T.T).T )
+		Dd_T = np.sum( (Dd_T * (self.Md.reshape(-1,1)) )**2 , axis=1 )
+		Dq_T = wasserstein_distance_matrix(qtl_fn_matrix=Xq_T, weights = Mq)
+		D_T = (Dc_T + Dd_T + Dq_T).T
 
-	    MG = {}
-	    index = X_estimation.index
-	    for i in range(Y.shape[0]):
-	        #finding k closest control units to unit i
-	        idx = np.argpartition(D_C[i,:],k)
-	        matched_df_C = pd.DataFrame( 
-	            np.hstack( 
-	                (
-	                    Xc_C[idx[:k],:], 
-	                    Xd_C[idx[:k],:].reshape((k,len(self.discrete))), 
-	                    # Y_C[idx[:k]].reshape(-1,1), 
-	                    D_C[i,idx[:k]].reshape(-1,1), 
-	                    np.zeros((k,1)) ) 
-	                ), 
-	            index = df_C.index[idx[:k]],
-	            columns=self.continuous+self.discrete+['distance',self.treatment] 
-	            )
+		# distance of control units
+		Dc_C = (
+			np.ones(
+				(
+					Xc_C.shape[0],
+					Xc.shape[1],
+					Xc.shape[0]
+				)	
+			) * Xc.T - 
+				(
+			np.ones(
+				(
+					Xc.shape[0],
+					Xc.shape[1],
+					Xc_C.shape[0])
+				) * Xc_C.T).T
+			)
+		Dc_C = np.sum( (Dc_C * (self.Mc.reshape(-1,1)) )**2 , axis=1 )
+		Dd_C = (
+			np.ones(
+				(
+					Xd_C.shape[0],
+					Xd.shape[1],
+					Xd.shape[0])
+				) * Xd.T != (
+			np.ones(
+				(
+					Xd.shape[0],
+					Xd.shape[1],
+					Xd_C.shape[0]
+					)
+				) * Xd_C.T).T )
+		Dd_C = np.sum( (Dd_C * (self.Md.reshape(-1,1)) )**2 , axis=1 )
+		Dq_C = wasserstein_distance_matrix(qtl_fn_matrix=Xq_C, weights = Mq)
+		D_C = (Dc_C + Dd_C + Dq_C).T
 
-	        #finding k closest treated units to unit i
-	        idx = np.argpartition(D_T[i,:],k)
-	        matched_df_T = pd.DataFrame( 
-	            np.hstack( 
-	                (
-	                    Xc_T[idx[:k],:], 
-	                    Xd_T[idx[:k],:].reshape((k,len(self.discrete))), 
-	                    # Y_T[idx[:k]].reshape(-1,1), 
-	                    D_T[i,idx[:k]].reshape(-1,1), 
-	                    np.ones((k,1)) ) 
-	                ), 
-	            index=df_T.index[idx[:k]], 
-	            columns=self.continuous+self.discrete+['distance',self.treatment] 
-	            )
-	        matched_df = pd.DataFrame(
-	            np.hstack(
-	                (
-	                    Xc[i], 
-	                    Xd[i], 
-	                    # Y[i], 
-	                    0, 
-	                    T[i])
-	                ).reshape(1,-1), 
-	#             index=['query'], 
-	            index = [i],
-	            columns=self.continuous+self.discrete+['distance',self.treatment]
-	            )
-	        matched_df = matched_df.append(matched_df_T.append(matched_df_C))
-	        matched_df['unit_treatment'] = X_estimation.loc[i, self.treatment]
-	        MG[index[i]] = matched_df
-	#     return MG
-	    MG_X_df = pd.concat(MG).reset_index().rename(columns = {'level_0' : 'unit' ,  'level_1' : 'matched_unit'})
-	    
-	    return MG_X_df
+		MG = {}
+		index = X_estimation.index
+		for i in range(Y.shape[0]):
+			#finding k closest control units to unit i
+			idx = np.argpartition(D_C[i,:],k)
+			matched_df_C = pd.DataFrame( 
+				np.hstack( 
+					(
+						Xc_C[idx[:k],:], 
+						Xd_C[idx[:k],:].reshape((k,len(self.discrete))), 
+						# Y_C[idx[:k]].reshape(-1,1), 
+						D_C[i,idx[:k]].reshape(-1,1), 
+						np.zeros((k,1)) ) 
+					), 
+				index = df_C.index[idx[:k]],
+				columns=self.continuous+self.discrete+['distance',self.treatment] 
+				)
+
+			#finding k closest treated units to unit i
+			idx = np.argpartition(D_T[i,:],k)
+			matched_df_T = pd.DataFrame( 
+				np.hstack( 
+					(
+						Xc_T[idx[:k],:], 
+						Xd_T[idx[:k],:].reshape((k,len(self.discrete))), 
+						# Y_T[idx[:k]].reshape(-1,1), 
+						D_T[i,idx[:k]].reshape(-1,1), 
+						np.ones((k,1)) ) 
+					), 
+				index=df_T.index[idx[:k]], 
+				columns=self.continuous+self.discrete+['distance',self.treatment] 
+				)
+			matched_df = pd.DataFrame(
+				np.hstack(
+					(
+						Xc[i], 
+						Xd[i], 
+						# Y[i], 
+						0, 
+						T[i])
+					).reshape(1,-1), 
+		#             index=['query'], 
+				index = [i],
+				columns=self.continuous+self.discrete+['distance',self.treatment]
+				)
+			matched_df = matched_df.append(matched_df_T.append(matched_df_C))
+			matched_df['unit_treatment'] = X_estimation.loc[i, self.treatment]
+			MG[index[i]] = matched_df
+		#     return MG
+		MG_X_df = pd.concat(MG).reset_index().rename(columns = {'level_0' : 'unit' ,  'level_1' : 'matched_unit'})
+
+		return MG_X_df
 
 
 	def barycenter_imputation(self, X_estimation, Y_estimation, MG, qtl_id):
